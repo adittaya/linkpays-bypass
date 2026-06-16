@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.pyo
+final.png
+gate.html
+screenshots/
