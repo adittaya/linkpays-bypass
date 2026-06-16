@@ -5,26 +5,19 @@ echo "=================================="
 echo " linkpays-bypass — Auto Setup"
 echo "=================================="
 
-# ---- Check Python ----
 if ! command -v python3 &>/dev/null; then
-    echo "[!] Python3 not found. Install it first."
-    echo "    apt install python3 python3-pip"
+    echo "[!] Python3 not found: apt install python3 python3-pip python3-venv"
     exit 1
 fi
 
-PIP_ARGS=""
-python3 -m pip --version | grep -q "externally-managed" && PIP_ARGS="--break-system-packages" || true
-# PEP 668 check
-python3 -c "import sys; sys.exit(0)" 2>/dev/null
-python3 -m pip install --quiet --upgrade pip $PIP_ARGS 2>/dev/null || true
-
-# ---- Install pip packages ----
-echo "[1/3] Installing Python dependencies..."
-python3 -m pip install --quiet playwright undetected_playwright $PIP_ARGS
+echo "[1/3] Creating virtual environment..."
+python3 -m venv venv
+source venv/bin/activate
+python3 -m pip install --quiet --upgrade pip
+python3 -m pip install --quiet playwright undetected_playwright
 echo "  Done."
 
-# ---- Install Playwright system deps ----
-echo "[2/3] Installing Playwright system dependencies..."
+echo "[2/3] Installing system dependencies..."
 if command -v apt &>/dev/null; then
     apt update -qq && apt install -y -qq libnss3 libnspr4 libatk-bridge2.0-0 libdrm2 \
         libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
@@ -33,7 +26,6 @@ fi
 python3 -m playwright install-deps chromium 2>/dev/null || true
 echo "  Done."
 
-# ---- Install Chromium browser ----
 echo "[3/3] Installing Chromium browser..."
 python3 -m playwright install chromium 2>&1 | tail -1
 
@@ -43,5 +35,10 @@ echo " Setup complete! Starting bypass..."
 echo "=================================="
 echo ""
 
-# ---- Run bypass ----
-python3 "$(dirname "$0")/bypass.py"
+# Run bypass using venv python
+VENV_PYTHON="$(dirname "$0")/venv/bin/python3"
+if [ -f "$VENV_PYTHON" ]; then
+    "$VENV_PYTHON" "$(dirname "$0")/bypass.py"
+else
+    python3 "$(dirname "$0")/bypass.py"
+fi
