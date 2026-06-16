@@ -12,7 +12,7 @@ Does everything automatically:
   4. Auto-opens destination in your phone's browser
 """
 
-import asyncio, os, random, pathlib, subprocess
+import asyncio, os, random, pathlib, subprocess, sys
 from playwright.async_api import async_playwright
 from undetected_playwright import stealth_async
 
@@ -33,11 +33,13 @@ else:
 VIEWPORTS = [
     {'width': 1366, 'height': 768}, {'width': 1920, 'height': 1080},
     {'width': 1536, 'height': 864}, {'width': 1440, 'height': 900},
+    {'width': 1280, 'height': 720}, {'width': 1440, 'height': 900},
 ]
 UAS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
 ]
 
 async def delay(b=0.5, e=1.5):
@@ -76,30 +78,42 @@ async def click(page, sel):
 
 async def make_ctx(p):
     vp, ua = random.choice(VIEWPORTS), random.choice(UAS)
+    # Use full Chromium with --headless=new (not headless shell)
     browser = await p.chromium.launch(
-        headless=True,
+        headless=False,
         proxy=PROXY or None,
-        args=['--no-sandbox','--disable-gpu','--disable-blink-features=AutomationControlled']
+        args=[
+            '--headless=new',
+            '--no-sandbox','--disable-gpu',
+            '--disable-blink-features=AutomationControlled',
+            '--disable-dev-shm-usage',
+        ]
     )
     ctx = await browser.new_context(
         viewport=vp, user_agent=ua,
-        locale=random.choice(['en-US','en-IN']),
-        timezone_id=random.choice(['Asia/Kolkata','America/New_York'])
+        locale=random.choice(['en-US','en-IN','en-GB']),
+        timezone_id=random.choice(['Asia/Kolkata','America/New_York','Europe/London']),
+        device_scale_factor=random.choice([1, 2]),
+        has_touch=False,
+        is_mobile=False,
     )
     ctx = await stealth_async(ctx)
     await ctx.add_init_script('''
         Object.defineProperty(navigator,'webdriver',{get:()=>false});
-        Object.defineProperty(navigator,'plugins',{get:()=>[{name:'Chrome PDF Plugin'},{name:'Chrome PDF Viewer'}]});
+        Object.defineProperty(navigator,'plugins',{get:()=>[{name:'Chrome PDF Plugin'},{name:'Chrome PDF Viewer'},{name:'Chrome PDF Plugin'}]});
         window.chrome={runtime:{},app:{isInstalled:false}};
+        const origQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (p) => p.name==='notifications'
+            ? Promise.resolve({state:'denied'}) : origQuery(p);
     ''')
     page = await ctx.new_page()
     await page.evaluate('window.mx=0;window.my=0;')
     return browser, ctx, page, vp
 
 async def handle_unlock(page):
-    body = await page.evaluate('document.body?.innerText?.substring(0,200)') or ''
+    body = (await page.evaluate('document.body?.innerText?.substring(0,200)')) or ''
     if 'Access Denied' in body or 'Automated access' in body:
-        print('  [!] Blocked by Cloudflare'); return None
+        print('  [!] Blocked'); return None
     has = await page.evaluate('''()=>({
         w1:!!document.getElementById('tp-wait1'),
         unlockBtn:!!document.getElementById('tp-unlock-btn'),
@@ -139,17 +153,6 @@ async def handle_unlock(page):
         await asyncio.sleep(1)
     print('  [-] Continue never appeared'); return None
 
-def open_in_browser(url):
-    """Open URL in phone's default browser (Termux/Android)."""
-    try:
-        subprocess.run(['termux-open-url', url], check=False)
-        print(f'  [+] Opened in phone browser: {url}')
-    except FileNotFoundError:
-        try:
-            subprocess.run(['xdg-open', url], check=False)
-        except:
-            print(f'  [!] Open this manually: {url}')
-
 async def run():
     write_gate()
 
@@ -157,16 +160,34 @@ async def run():
         browser, ctx, page, vp = await make_ctx(p)
         print(f'[+] Viewport: {vp["width"]}x{vp["height"]}')
 
+        # ---------- linkpays.in ----------
         print('\n--- linkpays.in ---')
         await page.goto(SHORT_LINK, wait_until='domcontentloaded', timeout=30000)
-        await delay(2, 3); await scroll(page); await delay(3, 4)
+        await delay(3, 4); await scroll(page); await delay(2, 3)
+
+        # Listen for requests to track the view-counter call
+        view_sent = False
+        async def track_request(req):
+            nonlocal view_sent
+            if 'linkpays' in req.url and req.method == 'POST':
+                view_sent = True
+                print(f'  [>] View counter hit: {req.url[:80]}')
+        page.on('request', track_request)
 
         if await page.evaluate('!!document.getElementById("goBtn")'):
             await click(page, '#goBtn')
-            print('[+] Click registered on linkpays.in')
+            print('[+] goBtn clicked — waiting for view to register...')
+            # Wait for view counter POST to go out + dwell time
+            await page.wait_for_timeout(6000)
+            if view_sent:
+                print('[+] View counter request confirmed!')
+            else:
+                print('[~] No explicit POST caught — view may still count')
         await delay(2, 3)
         print(f'  -> {page.url}')
 
+        # ---------- Unlock chain ----------
+        print('\n--- Monetization chain ---')
         for hop in range(5):
             act = await handle_unlock(page)
             if not act: break
@@ -176,51 +197,63 @@ async def run():
                     await click(page, sel)
                 except:
                     await page.evaluate(f'document.querySelector("{sel}")?.dispatchEvent(new MouseEvent("click",{{bubbles:true}}))')
-                await delay(2, 4)
+                await delay(3, 5)
                 print(f'  -> {page.url}')
 
-        print('\n--- Auto-unlocking gate ---')
+        # ---------- Gate + auto-unlock ----------
+        print('\n--- Auto gate ---')
         await page.goto(f'file://{GATE_HTML}', wait_until='domcontentloaded')
-        await delay(1, 1)
+        await delay(1, 1.5)
 
-        # Listen for new tab (page) that will open from window.open
         dest_page = None
         async def on_page(new_page):
             nonlocal dest_page
             dest_page = new_page
-            await new_page.wait_for_load_state()
+            try:
+                await new_page.wait_for_load_state()
+            except:
+                pass
         ctx.on('page', on_page)
 
-        # Auto-type OPEN
-        input_el = page.locator('#code')
-        await input_el.click()
-        await delay(0.3, 0.5)
-        await page.keyboard.type('OPEN', delay=random.randint(50, 120))
+        inp = page.locator('#code')
+        await inp.click()
+        await delay(0.2, 0.4)
+        await page.keyboard.type('OPEN', delay=random.randint(60, 130))
         await delay(0.5, 1)
 
-        # Click the destination button
         btn = page.locator('#goBtn')
         await btn.wait_for(state='visible', timeout=5000)
         await click(page, '#goBtn')
-        print('  [+] Gate unlocked — destination opened in new tab')
+        print('  [+] Gate unlocked — destination loaded in background')
         await delay(2, 3)
 
-        # If Playwright captured the new tab, get its URL
         if dest_page:
-            dest_url = dest_page.url
-            print(f'  [+] Playwright opened: {dest_url}')
+            print(f'  [+] Loaded: {dest_page.url}')
             await dest_page.close()
 
         await browser.close()
 
-    # Open destination in the phone's real browser
+    # ---------- Open on phone ----------
     print('\n--- Opening on phone ---')
-    open_in_browser(DEST)
+    try:
+        r = subprocess.run(['termux-open-url', DEST], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            print(f'  [+] termux-open-url succeeded')
+        else:
+            print(f'  [!] termux-open-url failed: {r.stderr.strip()}')
+    except FileNotFoundError:
+        print('  [!] termux-open-url not found — install Termux:API')
+    except Exception as e:
+        print(f'  [!] {e}')
 
-    print(f'\n{"="*50}')
-    print(' DONE — view registered + destination opened')
-    print(' Check your linkpays dashboard!')
-    print(f'{"="*50}')
+    print(f'\n{"="*55}')
+    print(f'  DONE — ')
+    print(f'  1. View sent to linkpays dashboard')
+    print(f'  2. Destination ready:')
+    print(f'     {DEST}')
+    print(f'')
+    print(f'  If browser didn\'t auto-open, paste the URL above')
+    print(f'{"="*55}')
 
 def write_gate():
     pathlib.Path(GATE_HTML).write_text(f'''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Unlock</title><style>
