@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
 """
-linkpays.in auto-clicker + type-to-unlock gate
-===============================================
+linkpays.in bypass — fully automated
+=====================================
 Usage:
   python3 bypass.py
 
-Environment (optional - only if using a proxy):
-  PROXY_HOST   - proxy hostname
-  PROXY_PORT   - proxy port
-  PROXY_USER   - proxy username (optional)
-  PROXY_PASS   - proxy password (optional)
-
-The script:
-  1. Clicks goBtn on linkpays.in to register a view
-  2. Handles any unlock chain (timer → verify → continue)
-  3. Opens a gate page — type "OPEN" to reveal the destination button
+Does everything automatically:
+  1. Clicks goBtn on linkpays.in → registers view
+  2. Navigates unlock chain (timer → verify → continue)
+  3. Auto-types "OPEN" in the gate
+  4. Auto-opens destination in your phone's browser
 """
 
-import asyncio, os, random, pathlib
+import asyncio, os, random, pathlib, subprocess
 from playwright.async_api import async_playwright
 from undetected_playwright import stealth_async
 
@@ -33,8 +28,7 @@ if h := os.environ.get('PROXY_HOST'):
         PROXY['password'] = os.environ['PROXY_PASS']
     print(f'[+] Proxy: {h}:{os.environ["PROXY_PORT"]}')
 else:
-    print('[i] No proxy — will only count views from a residential/home IP')
-    print('    Set PROXY_HOST, PROXY_PORT, PROXY_USER, PROXY_PASS if needed')
+    print('[i] No proxy set — running from home/phone IP')
 
 VIEWPORTS = [
     {'width': 1366, 'height': 768}, {'width': 1920, 'height': 1080},
@@ -145,8 +139,18 @@ async def handle_unlock(page):
         await asyncio.sleep(1)
     print('  [-] Continue never appeared'); return None
 
+def open_in_browser(url):
+    """Open URL in phone's default browser (Termux/Android)."""
+    try:
+        subprocess.run(['termux-open-url', url], check=False)
+        print(f'  [+] Opened in phone browser: {url}')
+    except FileNotFoundError:
+        try:
+            subprocess.run(['xdg-open', url], check=False)
+        except:
+            print(f'  [!] Open this manually: {url}')
+
 async def run():
-    # Write gate HTML
     write_gate()
 
     async with async_playwright() as p:
@@ -175,18 +179,51 @@ async def run():
                 await delay(2, 4)
                 print(f'  -> {page.url}')
 
-        print('\n--- Gate ---')
+        print('\n--- Auto-unlocking gate ---')
         await page.goto(f'file://{GATE_HTML}', wait_until='domcontentloaded')
-        await page.screenshot(path=os.path.join(os.path.dirname(GATE_HTML) or '.', 'final.png'))
-        print(f'[+] Gate ready: file://{GATE_HTML}')
-        print('    Type "OPEN" → click button → destination')
+        await delay(1, 1)
 
-        await page.wait_for_timeout(3000)
-        await ctx.close()
+        # Listen for new tab (page) that will open from window.open
+        dest_page = None
+        async def on_page(new_page):
+            nonlocal dest_page
+            dest_page = new_page
+            await new_page.wait_for_load_state()
+        ctx.on('page', on_page)
+
+        # Auto-type OPEN
+        input_el = page.locator('#code')
+        await input_el.click()
+        await delay(0.3, 0.5)
+        await page.keyboard.type('OPEN', delay=random.randint(50, 120))
+        await delay(0.5, 1)
+
+        # Click the destination button
+        btn = page.locator('#goBtn')
+        await btn.wait_for(state='visible', timeout=5000)
+        await click(page, '#goBtn')
+        print('  [+] Gate unlocked — destination opened in new tab')
+        await delay(2, 3)
+
+        # If Playwright captured the new tab, get its URL
+        if dest_page:
+            dest_url = dest_page.url
+            print(f'  [+] Playwright opened: {dest_url}')
+            await dest_page.close()
+
         await browser.close()
 
+    # Open destination in the phone's real browser
+    print('\n--- Opening on phone ---')
+    open_in_browser(DEST)
+
+    print(f'\n{"="*50}')
+    print(' DONE — view registered + destination opened')
+    print(' Check your linkpays dashboard!')
+    print(f'{"="*50}')
+
 def write_gate():
-    pathlib.Path(GATE_HTML).write_text(f'''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Unlock Destination</title><style>
+    pathlib.Path(GATE_HTML).write_text(f'''<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Unlock</title><style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 body{{font-family:'Segoe UI',sans-serif;background:linear-gradient(135deg,#0f172a,#1e293b);min-height:100vh;display:flex;align-items:center;justify-content:center}}
 .card{{background:#fff;border-radius:24px;padding:3rem 2.5rem;width:100%;max-width:420px;box-shadow:0 25px 50px rgba(0,0,0,.25);text-align:center}}
